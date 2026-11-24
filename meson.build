@@ -4,11 +4,15 @@ project('tinyhttpd', 'cpp',
 
 cpp = meson.get_compiler('cpp')
 platform_deps = []
+platform_link_args = []
 if host_machine.system() == 'windows'
   platform_deps += cpp.find_library('ws2_32', required : true)
+elif host_machine.system() == 'linux'
+  platform_link_args += ['-static']
 endif
 
 executable('tinyhttpd',
            'src/tinyhttpd.cpp',
            dependencies : platform_deps,
+           link_args : platform_link_args,
            install : true)
