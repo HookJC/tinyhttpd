@@ -26,9 +26,12 @@
 #include <unordered_set>
 #include <vector>
 #ifdef __MINGW32__
-#include <windows.h>
 #include <winsock2.h>
+#include <windows.h>
 #include <ws2tcpip.h>
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
 #else
 #include <arpa/inet.h>
 #endif
@@ -71,6 +74,14 @@ struct FileInfo {
 std::unordered_map<std::string, std::deque<std::time_t>>
     clientRequestTimestamps;
 std::mutex rateLimitMutex;
+
+void CloseSocket(int socket) {
+#ifdef __MINGW32__
+  closesocket(static_cast<SOCKET>(socket));
+#else
+  close(socket);
+#endif
+}
 
 // Function to parse argument data from Argument struct
 std::unordered_map<std::string, std::string> ParseArguments(int argc,
@@ -213,7 +224,7 @@ void ServeDirectoryListing(int ClientSocket, const std::string &directoryPath,
     send(ClientSocket, responseHeader.c_str(), responseHeader.length(),
          MSG_NOSIGNAL);
     send(ClientSocket, responseStr.c_str(), responseStr.length(), MSG_NOSIGNAL);
-    close(ClientSocket);
+    CloseSocket(ClientSocket);
 
     LogResponse(responseStr);
     return;
@@ -399,7 +410,7 @@ void ServeDirectoryListing(int ClientSocket, const std::string &directoryPath,
   send(ClientSocket, responseHeader.c_str(), responseHeader.length(),
        MSG_NOSIGNAL);
   send(ClientSocket, responseStr.c_str(), responseStr.length(), MSG_NOSIGNAL);
-  close(ClientSocket);
+  CloseSocket(ClientSocket);
 
   LogResponse(responseStr);
 }
@@ -508,7 +519,7 @@ void HandleClientRequest(int ClientSocket, int portNumber) {
   char buffer[4096] = {0};
   int valread = read(ClientSocket, buffer, 4096);
   if (valread <= 0) {
-    close(ClientSocket);
+    CloseSocket(ClientSocket);
     return;
   }
 
@@ -526,6 +537,15 @@ void HandleClientRequest(int ClientSocket, int portNumber) {
 
   // Construct the absolute file path
   std::string filePath = basePath + requestPath;
+#ifdef __MINGW32__
+  if (!requestPath.empty() && requestPath.back() == '/') {
+    while (filePath.size() > 1 &&
+           (filePath.back() == '/' || filePath.back() == '\\') &&
+           !(filePath.size() == 3 && filePath[1] == ':')) {
+      filePath.pop_back();
+    }
+  }
+#endif
 
   // Parse headers
   std::unordered_map<std::string, std::string> headers =
@@ -542,9 +562,14 @@ void HandleClientRequest(int ClientSocket, int portNumber) {
     struct sockaddr_in addr;
     socklen_t addrLen = sizeof(addr);
     getpeername(ClientSocket, reinterpret_cast<struct sockaddr *>(&addr), &addrLen);
+#ifdef __MINGW32__
+    const char *clientIpText = inet_ntoa(addr.sin_addr);
+    clientIp = clientIpText != nullptr ? clientIpText : "";
+#else
     char clientIpBuffer[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &(addr.sin_addr), clientIpBuffer, INET_ADDRSTRLEN);
     clientIp = clientIpBuffer;
+#endif
   }
 
   // Get the current time
@@ -564,7 +589,7 @@ void HandleClientRequest(int ClientSocket, int portNumber) {
            MSG_NOSIGNAL);
       LogRequest(clientIp, timeBuffer, method, requestPath, httpVersion, 429,
                  request);
-      close(ClientSocket);
+      CloseSocket(ClientSocket);
       return;
     }
   }
@@ -578,7 +603,7 @@ void HandleClientRequest(int ClientSocket, int portNumber) {
          MSG_NOSIGNAL);
     LogRequest(clientIp, timeBuffer, method, requestPath, httpVersion, 403,
                request);
-    close(ClientSocket);
+    CloseSocket(ClientSocket);
     return;
   }
 
@@ -638,7 +663,7 @@ void HandleClientRequest(int ClientSocket, int portNumber) {
     }
   }
 
-  close(ClientSocket);
+  CloseSocket(ClientSocket);
 }
 
 int BindToClientSocket(int SocketToBind) {
@@ -694,7 +719,7 @@ int BindToClientSocket(int SocketToBind) {
 
     HttpdServerThread_t.emplace_back([ClientSocket, SocketToBind]() {
       HandleClientRequest(ClientSocket, SocketToBind);
-      close(ClientSocket); // Ensure socket is closed
+      CloseSocket(ClientSocket); // Ensure socket is closed
     });
 
     // Join all threads to ensure they finish before the server shuts down
@@ -710,7 +735,7 @@ int BindToClientSocket(int SocketToBind) {
   }
 
   // Close server socket before exiting
-  close(ServerSocket);
+  CloseSocket(ServerSocket);
 
   return 0;
 }
